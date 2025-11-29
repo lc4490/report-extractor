@@ -14,34 +14,206 @@ import csv
 os.system('cls' if os.name == 'nt' else 'clear')
 os.environ["TK_SILENCE_DEPRECATION"] = "1"
 
-# converts image to base64
-def pil_to_b64(img):
-    """Convert PIL image to base64 PNG."""
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
+array_fields = [
+        "拉力強度_warp", "拉力強度_weft",
+        "剝離強度_warp", "剝離強度_weft",
+        "撕裂強度_warp", "撕裂強度_weft",
+        "高週波強度B/B_warp", "高週波強度B/B_weft",
+        "高迪波強度F/B_warp", "高迪波強度F/B_weft",
+    ]
+# select folder
+def select_folder():
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    folder = filedialog.askdirectory(title="Select a folder to search")
+    root.destroy()
+    return folder
 
-# runs ocr on a pdf with a path
+# takes folder path, key, and openai api key and parses all files that match key. then, it sends it these pdf files to get ocred, and returns the results
+def collect_results(folder_path: Path, key: str, client: OpenAI) -> list[dict]:
+    results: list[dict] = []
+
+    for fname in os.listdir(folder_path):
+        if key.lower() not in fname.lower():
+            continue
+
+        full_path = folder_path / fname
+        if not full_path.is_file():
+            continue
+
+        file_rows = build_rows_for_file(full_path, client)
+        results.extend(file_rows)
+
+    return results
+
+# takes a file path and an openai api key and sends it to get ocred, then cleans up the results to get appended
+def build_rows_for_file(path: Path, client: OpenAI) -> list[dict]:
+    data = ocr_pdf_with_openai(str(path.resolve()), client)
+    num_rows = max(len(data[field]) for field in array_fields)
+
+    rows = []
+    for i in range(num_rows):
+        row = {
+            "訂單編號": data["訂單編號"],
+            "重量": data["重量"],
+            "厚度": data["厚度"],
+            "roll": i + 1,
+        }
+        for field in array_fields:
+            vals = data[field]
+            if not vals:
+                row[field] = "N/A"
+            elif i < len(vals):
+                row[field] = vals[i]
+            else:
+                row[field] = vals[-1]
+        rows.append(row)
+    return rows
+
+# takes a pdf file path, and returns some raw ocr 
 def ocr_pdf_with_openai(pdf_path: Path, client):
     """
     Convert first page of PDF to image, send to OpenAI Vision,
     and return ONLY numbers (including -, /, .).
     """
-    pages = convert_from_path(
-        str(pdf_path),
-        dpi=350,              
-        fmt="png",            
-        thread_count=1       
-    )
+    pages = convert_from_path(str(pdf_path), dpi=300)
 
     # Take first page for now
     page = pages[0]
     img_b64 = pil_to_b64(page)
 
-    system_prompt = """你是一個精準的資料擷取引擎。 你會收到一張紡織/布料測試報告的圖片。你的工作是從圖片中的「檢驗結果」欄位中，擷取指定欄位的**第一筆資料（支號 1）**，並將結果以「dictionary（字典）」格式輸出。 ⚠️ 通用規則： - 只能讀取「檢驗結果」，不能使用「標準」或其他欄位。 - 不得輸出任何單位（例如 g/m2, mm, N/in, N）。 - 如果欄位存在而且有數值，就一定要用該數值，不能寫成 "N/A"。 - 如果欄位顯示 ND 或 N/A，請如實輸出（例如 "ND"）。 - 如果「在整張報告中仔細查找後」，確定該欄位完全不存在或該格完全沒有任何數字/文字，才輸出 "N/A"。 - key 名稱必須完全符合下列指定名稱。 - value 一律為字串格式。 - 只能輸出一個 JSON dictionary，不得包含說明文字、註解或額外內容。 📌 需輸出的欄位（全部都必須給出一個值，如果找不到就用 "N/A"）： - 訂單編號 - 重量 - 厚度 - 拉力強度_warp - 拉力強度_weft - 剝離強度_warp - 剝離強度_weft - 撕裂強度_warp - 撕裂強度_weft - 高週波強度B/B_warp - 高週波強度B/B_weft - 高迪波強度F/B_warp - 高迪波強度F/B_weft 📌 關於 F/B 欄位的**特別規則**（非常重要）： 1. 先在整張報告中**仔細尋找**「高週波強度 (N/in)-F/B」或類似標題，以及對應的 Warp / Weft「檢驗結果」。 2. 如果能找到 F/B 的欄位，且在「檢驗結果」中有數字或文字，就一定要輸出該值： - 例如："高迪波強度F/B_warp": "111.5", "高迪波強度F/B_weft": "87.5"。 - 這種情況**絕對不能**輸出 "N/A"。 3. 只有在以下情況，才可以輸出 "N/A"： - 整張報告中沒有出現任何 F/B 的標題或欄位（完全沒有 F/B 區塊），或 - 有 F/B 區塊，但該格「檢驗結果」完全空白、看不到任何數字或文字。 4. 如果只有其中一個方向缺值（例如 Warp 有值、Weft 沒有），那就： - 有值的方向 → 輸出實際數值； - 沒值的方向 → 輸出 "N/A"。 📌 輸出格式範例（僅為示意）： { "訂單編號": "24072201-3", "重量": "220.0", "厚度": "0.31", "拉力強度_warp": "974.8", "拉力強度_weft": "518.9", "剝離強度_warp": "ND", "剝離強度_weft": "ND", "撕裂強度_warp": "26.7", "撕裂強度_weft": "41.2", "高週波強度B/B_warp": "215.5", "高週波強度B/B_weft": "187.4", "高迪波強度F/B_warp": "111.5", "高迪波強度F/B_weft": "87.5" } 只能輸出上述結構的字典，不得輸出任何其他內容。"""
+    system_prompt = """你是一個精準的資料擷取引擎，專門處理紡織／布料的「內部檢驗報告」。
+
+你的任務是從圖像中擷取所有檢驗結果，不是只有第一筆。
+
+⚠️ **最重要規則：**
+你輸出的內容必須是 **一個完整且有效的 JSON 物件**（不能有任何多餘文字、不能用 Markdown、不能有說明）。
+
+---
+
+# 🚩 **輸出格式（務必遵守）**
+
+你必須輸出以下結構的 JSON（所有值皆為字串；多筆值使用 array）：
+
+```json
+{
+  "訂單編號": "",
+  "重量": "",
+  "厚度": "",
+  "拉力強度_warp": [],
+  "拉力強度_weft": [],
+  "剝離強度_warp": [],
+  "剝離強度_weft": [],
+  "撕裂強度_warp": [],
+  "撕裂強度_weft": [],
+  "高週波強度B/B_warp": [],
+  "高週波強度B/B_weft": [],
+  "高迪波強度F/B_warp": [],
+  "高迪波強度F/B_weft": []
+}
+```
+
+### 每個欄位規則：
+
+* 所有 measurement 欄位都是 **list of strings**
+* 每一筆代表「檢驗結果」表格中的一行（例如 支數 1、2、3）
+* 若該項目完全不存在，該欄位輸出 `[]`
+* 若某一格顯示 `ND`，請輸出 `"ND"`
+* 若該格完全空白，輸出 `"N/A"`
+
+---
+
+# 🚩 **資料擷取規則**
+
+## 1. 表頭欄位
+
+從報告最上方擷取：
+
+* `"訂單編號"`（如 24072201-3、S25092202-2）
+* `"重量"`（只保留數字，例如 221.5）
+* `"厚度"`（例如 0.31）
+
+不要保留單位（g/m2、mm）。
+
+---
+
+## 2. measurement 欄位（最關鍵）
+
+你必須找到對應的表格，並擷取 **所有「檢驗結果」的行**。
+
+永遠 **忽略 標準／規格／試驗標準 列**。
+
+多筆資料例：
+
+```
+支數 | warp | weft
+1    | 215.5 | 187.4
+2    | 274.5 | 180.5
+3    | 244.0 | 172.2
+```
+
+→ 你必須輸出：
+
+```
+"高週波強度B/B_warp": ["215.5","274.5","244.0"],
+"高週波強度B/B_weft": ["187.4","180.5","172.2"],
+```
+
+---
+
+## 3. 各表格對應方式
+
+### (a) 拉力強度 (N/in)
+
+標題包含：`拉力強度`
+→ 擷取所有檢驗結果行（warp & weft）
+
+### (b) 剝離強度 (N/in)
+
+標題包含：`剝離強度`
+→ 多筆列全部輸出
+
+### (c) 撕裂強度 (N)
+
+標題包含：`撕裂強度`
+→ 多筆列全部輸出
+
+### (d) 高週波強度 B/B (N/in)
+
+標題包含：`B/B` 或 `高週波強度(N/in)-B/B`
+→ 多筆列全部輸出
+→ 不能取標準值的 220.0 / 180.0 行
+
+### (e) 高迪波強度 F/B (N/in)
+
+標題包含：`F/B`
+→ 多筆列全部輸出
+→ 若整份報告沒有 F/B 表格 → 輸出空 array (`[]`)
+
+---
+
+# 🚩 **數值清理**
+
+1. 移除符號（例如 `215.5*` → `"215.5"`）
+2. 保留小數格式原樣
+3. 若表格單元格顯示 `ND` → `"ND"`
+4. 若單元格完全是空白 → `"N/A"`
+
+---
+
+# 🚩 **最後規則（務必遵守）**
+
+* 你只能輸出 **一個 JSON 物件**
+* 首字必須是 `{`
+* 末字必須是 `}`
+* 中間所有 key 的內容不可缺漏
+* 所有非必填項目若找不到 → 使用空 array `[]`
+* 不可輸出 Markdown 或任何說明文字
+        """
 
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4o",
         temperature=0,
         messages=[
             {"role": "system", "content": system_prompt},
@@ -62,11 +234,43 @@ def ocr_pdf_with_openai(pdf_path: Path, client):
     content = response.choices[0].message.content
 
     try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        print("Model did not return valid JSON. Raw content below:\n")
+        data = parse_model_json(content)
+    except Exception as e:
+        print("Model did not return valid JSON. Raw content below:\n", e)
         print(content)
-        return []
+        raise  # don't continue with invalid data
+    
+    return data
+
+# helper function for ocr
+def parse_model_json(raw: str) -> dict:
+    if "```" in raw:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start == -1 or end == -1:
+            raise ValueError("Could not find JSON object braces in model output.")
+        raw = raw[start:end+1]
+
+    data = json.loads(raw)
+
+    # If the model ever wraps the object in a list, unwrap [ {...} ]
+    if isinstance(data, list):
+        if len(data) == 1 and isinstance(data[0], dict):
+            data = data[0]
+        else:
+            raise ValueError(f"Expected a single JSON object, got list: {data}")
+
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected JSON object, got {type(data)}")
+
+    return data
+
+# helper function for ocr
+def pil_to_b64(img):
+    """Convert PIL image to base64 PNG."""
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 # closes terminal when the program ends
 def close_terminal_if_frozen():
@@ -87,28 +291,21 @@ def close_terminal_if_frozen():
         # Optionally do nothing or close terminal emulator
         pass
 
-# select folder
-def select_folder():
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
-    folder = filedialog.askdirectory(title="Select a folder to search")
-    root.destroy()
-    return folder
+
 
 def main():
     print("=== Report Extractor ===")
     
+    # 1. Ask user for API key
     api_key = input("Enter API key: ").strip()
-    
     client = OpenAI(api_key=api_key)
     
-    # 1. Ask for the search key
+    # 2. Ask for the search key
     key = input("Enter search key: ").strip()
     if not key:
         key = ""
     
-    # 2. Ask for folder
+    # 3. Ask for folder
     print("Please choose a folder...")
     folder = select_folder()
     if not folder:
@@ -117,32 +314,24 @@ def main():
 
     folder_path = Path(folder)
 
-    # 3. Search for matching filenames then append values to ret
-    ret = []
-    for fname in os.listdir(folder_path):
-        if key.lower() in fname.lower():
-            full_path = folder_path / fname
-            if full_path.is_file():
-                path = str(full_path.resolve())
-                ocred = ocr_pdf_with_openai(path, client)
-                print(ocred)
-                ret.append(ocred)
+    # 4. Search for matching filenames, run OCR, then parse through them, append them to ret
+    ret = collect_results(folder_path, key, client)
 
-
-    # 4. Write results to output.csv
+    # 5. Write results to output.csv
     output_path = folder_path / "output.csv"
     
-    fieldnames = ret[0].keys()
+    if ret:
+        fieldnames = ret[0].keys()
 
-    with output_path.open("w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        with output_path.open("w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
 
-        # Write header row
-        writer.writeheader()
+            # Write header row
+            writer.writeheader()
 
-        # Write each row
-        for item in ret:
-            writer.writerow(item)
+            # Write each row
+            for item in ret:
+                writer.writerow(item)
 
     print(f"\nDone! Saved to: {output_path}")
     input("Press Enter to close")
