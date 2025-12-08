@@ -14,76 +14,7 @@ import csv
 os.system('cls' if os.name == 'nt' else 'clear')
 os.environ["TK_SILENCE_DEPRECATION"] = "1"
 
-array_fields = [
-        "拉力強度_warp", "拉力強度_weft",
-        "剝離強度_warp", "剝離強度_weft",
-        "撕裂強度_warp", "撕裂強度_weft",
-        "高週波強度B/B_warp", "高週波強度B/B_weft",
-        "高迪波強度F/B_warp", "高迪波強度F/B_weft",
-    ]
-# select folder
-def select_folder():
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
-    folder = filedialog.askdirectory(title="Select a folder to search")
-    root.destroy()
-    return folder
-
-# takes folder path, key, and openai api key and parses all files that match key. then, it sends it these pdf files to get ocred, and returns the results
-def collect_results(folder_path: Path, key: str, client: OpenAI) -> list[dict]:
-    results: list[dict] = []
-
-    for fname in os.listdir(folder_path):
-        if key.lower() not in fname.lower():
-            continue
-
-        full_path = folder_path / fname
-        if not full_path.is_file():
-            continue
-
-        file_rows = build_rows_for_file(full_path, client)
-        results.extend(file_rows)
-
-    return results
-
-# takes a file path and an openai api key and sends it to get ocred, then cleans up the results to get appended
-def build_rows_for_file(path: Path, client: OpenAI) -> list[dict]:
-    data = ocr_pdf_with_openai(str(path.resolve()), client)
-    num_rows = max(len(data[field]) for field in array_fields)
-
-    rows = []
-    for i in range(num_rows):
-        row = {
-            "訂單編號": data["訂單編號"],
-            "重量": data["重量"],
-            "厚度": data["厚度"],
-            "roll": i + 1,
-        }
-        for field in array_fields:
-            vals = data[field]
-            if not vals:
-                row[field] = "N/A"
-            elif i < len(vals):
-                row[field] = vals[i]
-            else:
-                row[field] = vals[-1]
-        rows.append(row)
-    return rows
-
-# takes a pdf file path, and returns some raw ocr 
-def ocr_pdf_with_openai(pdf_path: Path, client):
-    """
-    Convert first page of PDF to image, send to OpenAI Vision,
-    and return ONLY numbers (including -, /, .).
-    """
-    pages = convert_from_path(str(pdf_path), dpi=300)
-
-    # Take first page for now
-    page = pages[0]
-    img_b64 = pil_to_b64(page)
-
-    system_prompt = """你是一個精準的資料擷取引擎，專門處理紡織／布料的「內部檢驗報告」。
+SYSTEM_PROMPT = """你是一個精準的資料擷取引擎，專門處理紡織／布料的「內部檢驗報告」。
 
 你的任務是從圖像中擷取所有檢驗結果，不是只有第一筆。
 
@@ -211,6 +142,88 @@ def ocr_pdf_with_openai(pdf_path: Path, client):
 * 所有非必填項目若找不到 → 使用空 array `[]`
 * 不可輸出 Markdown 或任何說明文字
         """
+
+array_fields = [
+        "拉力強度_warp", "拉力強度_weft",
+        "剝離強度_warp", "剝離強度_weft",
+        "撕裂強度_warp", "撕裂強度_weft",
+        "高週波強度B/B_warp", "高週波強度B/B_weft",
+        "高迪波強度F/B_warp", "高迪波強度F/B_weft",
+    ]
+# select folder
+def select_folder():
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    folder = filedialog.askdirectory(title="Select a folder to search")
+    root.destroy()
+    return folder
+
+# takes folder path, key, and openai api key and parses all files that match key. then, it sends it these pdf files to get ocred, and returns the results
+def collect_results(folder_path: Path, key: str, client: OpenAI) -> list[dict]:
+    results: list[dict] = []
+
+    for fname in os.listdir(folder_path):
+        # 1) Key filter
+        if key.lower() not in fname.lower():
+            continue
+
+        full_path = folder_path / fname
+
+        # 2) File must exist + be a real file
+        if not full_path.is_file():
+            continue
+
+        # 3) Must be a PDF file by extension
+        if full_path.suffix.lower() != ".pdf":
+            continue
+
+        # 4) Process this PDF
+        file_rows = build_rows_for_file(full_path, client)
+        if file_rows:
+            results.extend(file_rows)
+
+    return results
+
+
+# takes a file path and an openai api key and sends it to get ocred, then cleans up the results to get appended
+def build_rows_for_file(path: Path, client: OpenAI) -> list[dict]:
+    data = ocr_pdf_with_openai(str(path.resolve()), client)
+    num_rows = max(len(data[field]) for field in array_fields)
+
+    rows = []
+    for i in range(num_rows):
+        row = {
+            "訂單編號": data["訂單編號"],
+            "重量": data["重量"],
+            "厚度": data["厚度"],
+            "roll": i + 1,
+        }
+        for field in array_fields:
+            vals = data[field]
+            if not vals:
+                row[field] = "N/A"
+            elif i < len(vals):
+                row[field] = vals[i]
+            else:
+                row[field] = vals[-1]
+        rows.append(row)
+    return rows
+
+# takes a pdf file path, and returns some raw ocr 
+def ocr_pdf_with_openai(pdf_path: Path, client):
+    """
+    Convert first page of PDF to image, send to OpenAI Vision,
+    and return ONLY numbers (including -, /, .).
+    """
+    print(pdf_path)
+    pages = convert_from_path(str(pdf_path), dpi=300)
+
+    # Take first page for now
+    page = pages[0]
+    img_b64 = pil_to_b64(page)
+
+    system_prompt = SYSTEM_PROMPT
 
     response = client.chat.completions.create(
         model="gpt-4o",
