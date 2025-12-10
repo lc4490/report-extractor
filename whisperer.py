@@ -10,6 +10,7 @@ import os
 import tkinter as tk
 from tkinter import filedialog
 
+os.system('cls' if os.name == 'nt' else 'clear')
 os.environ["TK_SILENCE_DEPRECATION"] = "1"
 
 # Initialize the client with your API key
@@ -21,6 +22,13 @@ def clean_num(s: str):
     s = s.replace(",", ".")
     m = re.search(r"-?\d+(?:\.\d+)?", s)
     return m.group(0) if m else ""
+
+def is_num_less_than_2(x):
+    try:
+        return float(x) < 2
+    except:
+        return False      # not a number
+
 
 # BILINGUAL GET LOT NO, WEIGHT, AND THICKNESS
 def extract_header_for_page(page_text: str):
@@ -347,6 +355,65 @@ def extract_chinese_standard_mech(page_text: str):
 
     return None
 
+def extract_chinese_hf_standard(page_text: str):
+    """
+    Extract standard values for:
+      - B/B_warp
+      - B/B_weft
+      - F/B_warp
+      - F/B_weft
+
+    Will NOT reuse B/B for F/B. If F/B standards are missing, they remain "N/A".
+    """
+    m = re.search(
+        r"檢\s*驗\s*項\s*目\s+高\s*週\s*波\s*強\s*度\s*\(N/in\)-B/B(.*?)(?:支\s*號|Roll no\.|<<<|\Z)",
+        page_text,
+        flags=re.S,
+    )
+    if not m:
+        return None
+
+    block = m.group(1)
+
+    # Jump to 品質標準 section
+    m_std = re.search(r"品\s*質\s*標\s*準(.*)", block, flags=re.S)
+    if not m_std:
+        return None
+
+    after = m_std.group(1)
+
+    bb_warp = "N/A"
+    bb_weft = "N/A"
+    fb_warp = "N/A"
+    fb_weft = "N/A"
+
+    # Find numeric lines immediately after 品質標準
+    for line in after.splitlines():
+        nums = re.findall(r"[\d]+(?:[.,]\d+)?", line)
+        if not nums:
+            continue
+
+        # B/B always comes first
+        if len(nums) >= 1:
+            bb_warp = clean_num(nums[0])
+        if len(nums) >= 2:
+            bb_weft = clean_num(nums[1])
+
+        # F/B ONLY if explicitly present
+        if len(nums) >= 3:
+            fb_warp = clean_num(nums[2])
+        if len(nums) >= 4:
+            fb_weft = clean_num(nums[3])
+
+        break  # Only process the first numeric line after 標準
+
+    return {
+        "bb_warp": bb_warp,
+        "bb_weft": bb_weft,
+        "fb_warp": fb_warp,
+        "fb_weft": fb_weft,
+    }
+
 # CHINESE EXTRACT ALL VALUES
 def extract_chinese_mech_row_map(page_text: str):
     """
@@ -401,29 +468,43 @@ def extract_chinese_mech_row_map(page_text: str):
 def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, thickness: str):
     """
     Chinese 高週波 parser:
-    - Standards come from 拉力強度 block (tensile, peel, tear)
-    - Per-roll overrides are applied from 拉力 block (e.g. roll 2)
+
+    - Tensile / peel / tear standards from 拉力強度 block
+    - Per-roll overrides from 拉力 block (if present)
+    - 高週波 B/B & F/B from this block
+      * if F/B missing per roll, fall back to F/B standards
     """
     rows = []
 
-    # 1. standards
-    std = extract_chinese_standard_mech(page_text)
-    if std:
-        tensile_warp_std = std["tensile_warp"]
-        tensile_weft_std = std["tensile_weft"]
-        peel_warp_std = std["peel_warp"]
-        peel_weft_std = std["peel_weft"]
-        tear_warp_std = std["tear_warp"]
-        tear_weft_std = std["tear_weft"]
+    # 1. Mechanical standards (tensile / peel / tear)
+    std_mech = extract_chinese_standard_mech(page_text)
+    if std_mech:
+        tensile_warp_std = std_mech["tensile_warp"]
+        tensile_weft_std = std_mech["tensile_weft"]
+        peel_warp_std   = std_mech["peel_warp"]
+        peel_weft_std   = std_mech["peel_weft"]
+        tear_warp_std   = std_mech["tear_warp"]
+        tear_weft_std   = std_mech["tear_weft"]
     else:
         tensile_warp_std = tensile_weft_std = "N/A"
-        peel_warp_std = peel_weft_std = "N/A"
-        tear_warp_std = tear_weft_std = "N/A"
+        peel_warp_std   = peel_weft_std   = "N/A"
+        tear_warp_std   = tear_weft_std   = "N/A"
 
-    # 2. per-roll overrides
+    # 2. HF standards (B/B & F/B) – NEW
+    std_hf = extract_chinese_hf_standard(page_text)
+    if std_hf:
+        bb_warp_std = std_hf["bb_warp"]
+        bb_weft_std = std_hf["bb_weft"]
+        fb_warp_std = std_hf["fb_warp"]
+        fb_weft_std = std_hf["fb_weft"]
+    else:
+        bb_warp_std = bb_weft_std = "N/A"
+        fb_warp_std = fb_weft_std = "N/A"
+
+    # 3. Per-roll mechanical overrides
     mech_rows = extract_chinese_mech_row_map(page_text)
 
-    # 3. now parse 高週波 block
+    # 4. 高週波強度 block
     m = re.search(
         r"檢\s*驗\s*項\s*目\s+高\s*週\s*波\s*強\s*度\s*\(N/in\)-B/B(.*?)(?:檢\s*人\s*員|ISO NO\.|<<<|\Z)",
         page_text,
@@ -434,7 +515,13 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
 
     block = m.group(1)
 
+    hf_has_peel = ("剝 離 強 度" in block) or ("剝離 強 度" in block) or ("剝離強度" in block)
+
     for line in block.splitlines():
+        if not re.search(r"(合\s*格|不\s*合\s*格)", line):
+            continue
+
+        print("line:", line)
         m_line = re.match(r"\s*(\d+)\s+(.*)", line)
         if not m_line:
             continue
@@ -442,32 +529,109 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
         roll_no = int(m_line.group(1))
         rest = m_line.group(2)
 
-        tokens = rest.split()
-        nums_raw = [t for t in tokens if re.search(r"\d", t)]
-        nums = [clean_num(t) for t in nums_raw if clean_num(t)]
+        # ---- collect numeric/ND tokens on this row ----
+        tokens = []
+        for tok in rest.split():
+            if "ND" in tok.upper():
+                tokens.append("ND")
+            elif re.search(r"\d", tok):
+                num = clean_num(tok)
+                if num and not is_num_less_than_2(num):
+                    tokens.append(num)
 
-        if len(nums) < 4:
+        if not tokens:
             continue
 
-        bb_warp, bb_weft, fb_warp, fb_weft = nums[:4]
+        # defaults
+        bb_warp = "N/A"
+        bb_weft = "N/A"
+        fb_warp = "N/A"
+        fb_weft = "N/A"
+        peel_extra_warp = None
+        
+        # print(tokens) 
 
-        # start from standards
+        if hf_has_peel:
+            # ====== CASE 1: HF HEADER HAS 剝離強度 COLUMN (old weird file) ======
+            if len(tokens) >= 5:
+                # B/B(2) + F/B(2) + 剝離_warp
+                bb_warp, bb_weft, fb_warp, fb_weft = tokens[:4]
+                peel_extra_warp = tokens[4]
+
+            elif len(tokens) == 4:
+                # just B/B + F/B
+                bb_warp, bb_weft, fb_warp, fb_weft = tokens
+
+            elif len(tokens) == 3:
+                # B/B(2) + (either F/B_warp or 剝離_warp); use threshold vs standards
+                bb_warp, bb_weft, third = tokens
+
+                if third == "ND":
+                    peel_extra_warp = third
+                else:
+                    treated_as_peel = False
+                    try:
+                        v = float(third)
+                        peel_ref = float(peel_warp_std) if peel_warp_std not in ("N/A", "ND") else None
+                        fb_ref = float(fb_warp_std) if fb_warp_std not in ("N/A", "ND") else None
+                        if peel_ref is not None and fb_ref is not None:
+                            if abs(v - peel_ref) <= abs(v - fb_ref) * 0.7:
+                                treated_as_peel = True
+                        elif peel_ref is not None and v <= peel_ref * 2:
+                            treated_as_peel = True
+                    except ValueError:
+                        pass
+
+                    if treated_as_peel:
+                        peel_extra_warp = third
+                    else:
+                        fb_warp = third
+
+            elif len(tokens) == 2:
+                bb_warp, bb_weft = tokens
+
+        else:
+            # ====== CASE 2: HF HEADER HAS NO 剝離強度, ONLY B/B + F/B + 厚度(mm) ======
+            # → Use ONLY the first 4 tokens as B/B & F/B; ignore the trailing thicknesses
+            if len(tokens) >= 4:
+                bb_warp, bb_weft, fb_warp, fb_weft = tokens[:4]
+            elif len(tokens) == 3:
+                bb_warp, bb_weft, fb_warp = tokens
+            elif len(tokens) == 2:
+                bb_warp, bb_weft = tokens
+            # peel_extra_warp stays None here
+
+        # ---- fill missing HF from standards ----
+        if bb_warp == "N/A" and bb_warp_std != "N/A":
+            bb_warp = bb_warp_std
+        if bb_weft == "N/A" and bb_weft_std != "N/A":
+            bb_weft = bb_weft_std
+
+        if fb_warp == "N/A" and fb_warp_std != "N/A":
+            fb_warp = fb_warp_std
+        if fb_weft == "N/A" and fb_weft_std != "N/A":
+            fb_weft = fb_weft_std
+
+        # ---- tensile / peel / tear from standards + mech overrides ----
         tensile_warp = tensile_warp_std
         tensile_weft = tensile_weft_std
-        peel_warp = peel_warp_std
-        peel_weft = peel_weft_std
-        tear_warp = tear_warp_std
-        tear_weft = tear_weft_std
+        peel_warp    = peel_warp_std
+        peel_weft    = peel_weft_std
+        tear_warp    = tear_warp_std
+        tear_weft    = tear_weft_std
 
-        # override if roll has its own row in 拉力 block
         if roll_no in mech_rows:
             info = mech_rows[roll_no]
             tensile_warp = info.get("tensile_warp", tensile_warp)
             tensile_weft = info.get("tensile_weft", tensile_weft)
-            peel_warp = info.get("peel_warp", peel_warp)
-            peel_weft = info.get("peel_weft", peel_weft)
-            tear_warp = info.get("tear_warp", tear_warp)
-            tear_weft = info.get("tear_weft", tear_weft)
+            peel_warp    = info.get("peel_warp", peel_warp)
+            peel_weft    = info.get("peel_weft", peel_weft)
+            tear_warp    = info.get("tear_warp", tear_warp)
+            tear_weft    = info.get("tear_weft", tear_weft)
+
+        # Only override peel_warp when the HF block truly has a peel column
+        if hf_has_peel and peel_extra_warp is not None:
+            peel_warp = peel_extra_warp
 
         row = {
             "訂單編號": lot_no,
@@ -489,7 +653,6 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
         rows.append(row)
 
     return rows
-
 
 # select folder
 def select_folder():
@@ -518,7 +681,7 @@ def main():
     # Extract tables from the PDF
     
         
-    output_path = Path("output.csv")
+    output_path = folder_path / "output.csv"
 
     fieldnames = [
         "訂單編號","重量","厚度","roll",
