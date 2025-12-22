@@ -323,7 +323,7 @@ def extract_chinese_standard_mech(page_text: str):
     Returns a dict or None.
     """
     m = re.search(
-        r"檢\s*驗\s*項\s*目\s+拉\s*力\s*強\s*度(.*?)(?:檢\s*驗\s*項\s*目|<<<|\Z)",
+        r"(?:檢)?\s*驗\s*項\s*目\s+拉\s*力\s*強\s*度(.*?)(?:檢\s*驗\s*項\s*目|<<<|\Z)",
         page_text,
         flags=re.S,
     )
@@ -352,7 +352,7 @@ def extract_chinese_standard_mech(page_text: str):
                 "tear_warp": vals[4],
                 "tear_weft": vals[5],
             }
-
+    print("returned end")
     return None
 
 def extract_chinese_hf_standard(page_text: str):
@@ -422,7 +422,7 @@ def extract_chinese_mech_row_map(page_text: str):
     For this file, only roll 2 has real values.
     """
     m = re.search(
-        r"檢\s*驗\s*項\s*目\s+拉\s*力\s*強\s*度(.*?)(?:檢\s*驗\s*項\s*目\s+高\s*週\s*波\s*強\s*度|<<<|\Z)",
+        r"(?:檢?\s*驗?\s*項\s*目)\s+拉\s*力\s*強\s*度(.*?)(?:檢?\s*驗?\s*項\s*目|<<<|\Z)",
         page_text,
         flags=re.S,
     )
