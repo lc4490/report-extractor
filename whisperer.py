@@ -15,7 +15,7 @@ os.environ["TK_SILENCE_DEPRECATION"] = "1"
 
 # Initialize the client with your API key
 # Provide the base URL and API key explicitly
-client = LLMWhispererClientV2(base_url="https://llmwhisperer-api.us-central.unstract.com/api/v2", api_key='')
+client = LLMWhispererClientV2(base_url="https://llmwhisperer-api.us-central.unstract.com/api/v2", api_key='lBkXnmkVufnr50LkM0hDPGElyGOiQoxIs66e2VFU1_Q')
 
 # HELPER CLEAN FUNCTION
 def clean_num(s: str):
@@ -110,11 +110,11 @@ def extract_rows_for_page(page_text: str):
 
     # If the page has 訂單編號, treat it as Chinese layout
     if re.search(r"訂\s*單\s*編\s*號", page_text):
-        print("chinese")
+        # prrint("chinese")
         return extract_hf_rows_for_page_chinese(page_text, lot_no, weight, thickness)
 
     # Otherwise, assume English UE083-style adhesion block
-    print("english")
+    # prrint("english")
     return extract_adhesion_rows_english(page_text, lot_no, weight, thickness)
 
 # BILINGUAL EXTRACT ROW FOR ALL PAGES
@@ -163,7 +163,7 @@ def collect_results(client: str, path: str):
                     )
                     # Refer to documentation for result format
                     result_text = resultx["extraction"]["result_text"]
-                    print(result_text)
+                    # prrint(result_text)
                     rows = extract_all_rows(result_text)
                     break
                 # Poll every 5 seconds
@@ -191,7 +191,7 @@ def big_collect_results(client: str, folder_path: Path, key: str):
             continue
 
         # 4) Process this PDF
-        # print(full_path)
+        # prrint(full_path)
         file_rows = collect_results(client, full_path)
         if file_rows:
             results.extend(file_rows)
@@ -352,7 +352,7 @@ def extract_chinese_standard_mech(page_text: str):
                 "tear_warp": vals[4],
                 "tear_weft": vals[5],
             }
-    print("returned end")
+    # prrint("returned end")
     return None
 
 def extract_chinese_hf_standard(page_text: str):
@@ -521,7 +521,7 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
         if not re.search(r"(合\s*格|不\s*合\s*格)", line):
             continue
 
-        print("line:", line)
+        # prrint("line:", line)
         m_line = re.match(r"\s*(\d+)\s+(.*)", line)
         if not m_line:
             continue
@@ -549,7 +549,7 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
         fb_weft = "N/A"
         peel_extra_warp = None
         
-        # print(tokens) 
+        # prrint(tokens) 
 
         if hf_has_peel:
             # ====== CASE 1: HF HEADER HAS 剝離強度 COLUMN (old weird file) ======
@@ -656,26 +656,30 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
 
 # select folder
 def select_folder():
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
-    folder = filedialog.askdirectory(title="Select a folder to search")
-    root.destroy()
-    return folder
+    folder = input("Paste folder path (or drag folder here): ").strip().strip('"')
+    p = Path(folder)
+    if not p.exists() or not p.is_dir():
+        print("Invalid folder.")
+        return None
+    return p
+    # root = tk.Tk()
+    # root.withdraw()
+    # root.attributes("-topmost", True)
+    # folder = filedialog.askdirectory(title="Select a folder to search")
+    # root.destroy()
+    # return folder
 
 
 def main():
     print("=== Report Extractor ===")
-    key = input("Enter search key: ").strip()
-    if not key:
-        key = ""
-    key = ""
     print("Please choose a folder...")
     folder = select_folder()
     if not folder:
         print("No folder selected. Exiting.")
         return
-
+    key = input("Enter search key: ").strip()
+    if not key:
+        key = ""
     folder_path = Path(folder)
     rows = big_collect_results(client, folder_path, key)
     # Extract tables from the PDF
@@ -692,7 +696,7 @@ def main():
         "高迪波強度F/B_warp","高迪波強度F/B_weft",
     ]
 
-    with output_path.open("w", newline="") as f:
+    with output_path.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
