@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# venv / python
+.venv/
+__pycache__/
+*.pyc
+
+# build artifacts
+build/
+dist/
+*.spec
+
+# outputs
+output*.csv
+failures/
