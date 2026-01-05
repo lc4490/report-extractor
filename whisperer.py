@@ -362,7 +362,7 @@ def extract_chinese_hf_standard(page_text: str):
     Will NOT reuse B/B for F/B. If F/B standards are missing, they remain "N/A".
     """
     m = re.search(
-        r"檢\s*驗\s*項\s*目\s+高\s*週\s*波\s*強\s*度\s*\(N/in\)-B/B(.*?)(?:支\s*號|Roll no\.|<<<|\Z)",
+        r"(?:檢)?\s*驗\s*項\s*目\s+熱\s*壓\s*\(N/in\)-B/B(.*?)(?:(?:檢\s*)?驗\s*人\s*員|[:：]\s*驗\s*人\s*員\s*[:：]|ISO NO\.|<<<|\Z)",
         page_text,
         flags=re.S,
     )
@@ -418,7 +418,7 @@ def extract_chinese_mech_row_map(page_text: str):
     For this file, only roll 2 has real values.
     """
     m = re.search(
-        r"(?:檢?\s*驗?\s*項\s*目)\s+拉\s*力\s*強\s*度(.*?)(?:檢?\s*驗?\s*項\s*目|<<<|\Z)",
+        r"(?:檢)?\s*驗\s*項\s*目\s+熱\s*壓\s*\(N/in\)-B/B(.*?)(?:(?:檢\s*)?驗\s*人\s*員|[:：]\s*驗\s*人\s*員\s*[:：]|ISO NO\.|<<<|\Z)",
         page_text,
         flags=re.S,
     )
@@ -502,7 +502,7 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
 
     # 4. 高週波強度 block
     m = re.search(
-        r"檢\s*驗\s*項\s*目\s+高\s*週\s*波\s*強\s*度\s*\(N/in\)-B/B(.*?)(?:檢\s*人\s*員|ISO NO\.|<<<|\Z)",
+        r"(?:檢)?\s*驗\s*項\s*目\s+熱\s*壓\s*\(N/in\)-B/B(.*?)(?:(?:檢\s*)?驗\s*人\s*員|[:：]\s*驗\s*人\s*員\s*[:：]|ISO NO\.|<<<|\Z)",
         page_text,
         flags=re.S,
     )
