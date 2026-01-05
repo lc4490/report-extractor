@@ -725,8 +725,14 @@ def main():
             
     rows = big_collect_results(client, filenames)
     # Extract tables from the PDF
-    desktop = get_desktop_path()
-    output_path = desktop / "output.csv"
+    try:
+        desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
+    except:
+        # Fallback for some specific systems or edge cases (like multi-user servers)
+        desktop_path = os.path.join(os.environ.get('HOMEDRIVE', ''), os.environ.get('HOMEPATH', ''), 'Desktop')
+
+    filename = 'output.csv'
+    output_path = os.path.join(desktop_path, filename)
 
     fieldnames = [
         "訂單編號","重量","厚度","roll",
@@ -737,7 +743,7 @@ def main():
         "高迪波強度F/B_warp","高迪波強度F/B_weft",
     ]
 
-    with output_path.open("w", newline="", encoding="utf-8-sig") as f:
+    with open(output_path, mode='w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
