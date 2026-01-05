@@ -9,6 +9,7 @@ import re
 import os
 import tkinter as tk
 from tkinter import filedialog
+import sys
 
 os.system('cls' if os.name == 'nt' else 'clear')
 os.environ["TK_SILENCE_DEPRECATION"] = "1"
@@ -29,6 +30,14 @@ def is_num_less_than_2(x):
     except:
         return False      # not a number
 
+def get_desktop_path():
+    if getattr(sys, 'frozen', False):
+        # Running as PyInstaller exe
+        home = Path(os.environ["USERPROFILE"])
+    else:
+        # Running as normal Python script
+        home = Path.home()
+    return home / "Desktop"
 
 # BILINGUAL GET LOT NO, WEIGHT, AND THICKNESS
 def extract_header_for_page(page_text: str):
@@ -172,30 +181,14 @@ def collect_results(client: str, path: str):
         print(e)
     return rows
 
-def big_collect_results(client: str, folder_path: Path, key: str):
+def big_collect_results(client: str, filenames):
     results: list[dict] = []
-
-    for fname in os.listdir(folder_path):
-        # 1) Key filter
-        if key.lower() not in fname.lower():
-            continue
-
-        full_path = folder_path / fname
-
-        # 2) File must exist + be a real file
-        if not full_path.is_file():
-            continue
-
-        # 3) Must be a PDF file by extension
-        if full_path.suffix.lower() != ".pdf":
-            continue
-
-        # 4) Process this PDF
-        # prrint(full_path)
+    
+    for full_path in filenames:
+        print(full_path.name)
         file_rows = collect_results(client, full_path)
         if file_rows:
             results.extend(file_rows)
-
     return results
 # ENGLISH
 # ENGNLISH FIND STANDARD TENSILE VALUES
@@ -656,10 +649,10 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
 
 # select folder
 def select_folder():
-    folder = input("Paste folder path (or drag folder here): ").strip().strip('"')
+    folder = input("貼上資料夾路徑（或將資料夾拖曳到此處）：").strip().strip('"')
     p = Path(folder)
     if not p.exists() or not p.is_dir():
-        print("Invalid folder.")
+        print("無效的資料夾。")
         return None
     return p
     # root = tk.Tk()
@@ -668,24 +661,72 @@ def select_folder():
     # folder = filedialog.askdirectory(title="Select a folder to search")
     # root.destroy()
     # return folder
+    
+# parse folders
+def parse_only_pdfs(folder_path):
+    folder_path = Path(folder_path)
+    filenames = []
+
+    for path in folder_path.rglob("*.pdf"):
+        # 1) Must be a file (rglob can return dirs in other patterns)
+        if not path.is_file():
+            continue
+
+        # 2) Only keep files with "TR" in the filename
+        if "TR" not in path.name:
+            continue
+
+        filenames.append(path)
+
+    return filenames
+    
+# enter filters
+def enter_filters(filenames):
+    original = filenames[:]   # shallow copy
+    current = filenames[:]
+
+    while True:
+        print("\n目前檔案：")
+        for fname in current:
+            print(fname.name)
+
+        key = input(
+            "\n輸入搜尋字詞（輸入 * 或 all 重置，直接按回車鍵完成）："
+        ).strip().lower()
+
+        if not key:
+            break
+
+        if key in ("*", "all"):
+            current = original[:]
+            continue
+
+        current = [
+            fname for fname in current
+            if key in fname.name.lower()
+        ]
+
+    return current
 
 
 def main():
     print("=== Report Extractor ===")
-    print("Please choose a folder...")
+    print("請選擇資料夾...")
     folder = select_folder()
     if not folder:
-        print("No folder selected. Exiting.")
+        print("沒有資料夾")
         return
-    key = input("Enter search key: ").strip()
-    if not key:
-        key = ""
-    folder_path = Path(folder)
-    rows = big_collect_results(client, folder_path, key)
-    # Extract tables from the PDF
     
-        
-    output_path = folder_path / "output.csv"
+    folder_path = Path(folder)
+    
+    filenames = parse_only_pdfs(folder_path)
+    
+    filenames = enter_filters(filenames)
+            
+    rows = big_collect_results(client, filenames)
+    # Extract tables from the PDF
+    desktop = get_desktop_path()
+    output_path = desktop / "output.csv"
 
     fieldnames = [
         "訂單編號","重量","厚度","roll",
