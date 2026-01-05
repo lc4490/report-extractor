@@ -10,6 +10,7 @@ import os
 import tkinter as tk
 from tkinter import filedialog
 import sys
+import ctypes
 
 os.system('cls' if os.name == 'nt' else 'clear')
 os.environ["TK_SILENCE_DEPRECATION"] = "1"
@@ -31,13 +32,15 @@ def is_num_less_than_2(x):
         return False      # not a number
 
 def get_desktop_path():
-    if getattr(sys, 'frozen', False):
-        # Running as PyInstaller exe
-        home = Path(os.environ["USERPROFILE"])
+    if sys.platform.startswith("win"):
+        CSIDL_DESKTOPDIRECTORY = 0x10
+        buf = ctypes.create_unicode_buffer(260)
+        ctypes.windll.shell32.SHGetFolderPathW(
+            None, CSIDL_DESKTOPDIRECTORY, None, 0, buf
+        )
+        return buf.value
     else:
-        # Running as normal Python script
-        home = Path.home()
-    return home / "Desktop"
+        return os.path.join(os.path.expanduser("~"), "Desktop")
 
 # BILINGUAL GET LOT NO, WEIGHT, AND THICKNESS
 def extract_header_for_page(page_text: str):
@@ -725,14 +728,8 @@ def main():
             
     rows = big_collect_results(client, filenames)
     # Extract tables from the PDF
-    try:
-        desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
-    except:
-        # Fallback for some specific systems or edge cases (like multi-user servers)
-        desktop_path = os.path.join(os.environ.get('HOMEDRIVE', ''), os.environ.get('HOMEPATH', ''), 'Desktop')
-
-    filename = 'output.csv'
-    output_path = os.path.join(desktop_path, filename)
+    desktop_path = get_desktop_path()
+    output_path = os.path.join(desktop_path, "output.csv")
 
     fieldnames = [
         "訂單編號","重量","厚度","roll",
