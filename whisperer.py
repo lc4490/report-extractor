@@ -17,7 +17,7 @@ os.environ["TK_SILENCE_DEPRECATION"] = "1"
 
 # Initialize the client with your API key
 # Provide the base URL and API key explicitly
-client = LLMWhispererClientV2(base_url="https://llmwhisperer-api.us-central.unstract.com/api/v2", api_key='lBkXnmkVufnr50LkM0hDPGElyGOiQoxIs66e2VFU1_Q')
+client = LLMWhispererClientV2(base_url="https://llmwhisperer-api.us-central.unstract.com/api/v2", api_key='1s_TV6nE2Q2e3XQTT10ZtXTg8UPLKBjGYs3SWhwbOLk')
 
 # HELPER CLEAN FUNCTION
 def clean_num(s: str):
