@@ -113,7 +113,7 @@ def get_tensile_block(page_text: str):
     return block[:end]
 
 # BLINGUAL PICK ENGLISH OR CHINESE THEN EXTRACT ROWS
-def extract_rows_for_page(page_text: str):
+def extract_rows_for_page(page_text: str, filename):
     header = extract_header_for_page(page_text)
     if not header:
         return []
@@ -123,14 +123,14 @@ def extract_rows_for_page(page_text: str):
     # If the page has 訂單編號, treat it as Chinese layout
     if re.search(r"訂\s*單\s*編\s*號", page_text):
         # prrint("chinese")
-        return extract_hf_rows_for_page_chinese(page_text, lot_no, weight, thickness)
+        return extract_hf_rows_for_page_chinese(page_text, lot_no, weight, thickness, filename)
 
     # Otherwise, assume English UE083-style adhesion block
     # prrint("english")
-    return extract_adhesion_rows_english(page_text, lot_no, weight, thickness)
+    return extract_hf_rows_for_page_english(page_text, lot_no, weight, thickness, filename)
 
 # BILINGUAL EXTRACT ROW FOR ALL PAGES
-def extract_all_rows(result_text: str):
+def extract_all_rows(result_text: str, filename):
     """
     Split by page (<<<) and aggregate rows from each page.
     This automatically handles multiple header sections
@@ -142,7 +142,7 @@ def extract_all_rows(result_text: str):
     for page_text in pages:
         if not page_text.strip():
             continue
-        page_rows = extract_rows_for_page(page_text)
+        page_rows = extract_rows_for_page(page_text, filename)
         all_rows.extend(page_rows)
 
     return all_rows
@@ -175,8 +175,8 @@ def collect_results(client: str, path: str):
                     )
                     # Refer to documentation for result format
                     result_text = resultx["extraction"]["result_text"]
-                    # prrint(result_text)
-                    rows = extract_all_rows(result_text)
+                    print(result_text)
+                    rows = extract_all_rows(result_text, path.name)
                     break
                 # Poll every 5 seconds
                 time.sleep(5)
@@ -241,69 +241,256 @@ def extract_tensile_for_page(page_text: str):
     return tens
 
 # ENGLISH EXTRACT ALL ROWS
-def extract_adhesion_rows_english(page_text: str, lot_no: str, weight: str, thickness: str):
-    tensile_map = extract_tensile_for_page(page_text)
-    std_warp, std_weft = extract_standard_tensile(page_text)
+def extract_hf_rows_for_page_english(page_text: str, lot_no: str, weight: str, thickness: str, filename):
+    """
+    Chinese 高週波 / 熱壓 parser (schema-preserving):
 
+    - Tensile / peel / tear standards from 拉力強度 block
+    - Per-roll overrides from 拉力 block (if present)
+    - 熱壓 or 高週波 B/B & F/B from this block
+      * IMPORTANT: Never infer F/B unless an explicit "-F/B" header exists on the page.
+      * If F/B header is absent, F/B stays "N/A" and is NOT filled from standards.
+
+    NOTE: Output dict keys are kept EXACTLY the same as your old function
+          (including "高迪波強度F/B_*" typo) to match existing CSV headers.
+    """
     rows = []
 
-    adh_match = re.search(
-        r"Item\s+Adhesion Strength\(N/5cm\)-B/B(.*?)(?:\n\s*Operator\s*:|<<<|\Z)",
-        page_text,
-        flags=re.S,
-    )
-    if not adh_match:
-        return []
+    # 1) Mechanical standards (tensile / peel / tear)
+    std_mech = extract_chinese_standard_mech(page_text)
+    if std_mech:
+        tensile_warp_std = std_mech["tensile_warp"]
+        tensile_weft_std = std_mech["tensile_weft"]
+        peel_warp_std    = std_mech["peel_warp"]
+        peel_weft_std    = std_mech["peel_weft"]
+        tear_warp_std    = std_mech["tear_warp"]
+        tear_weft_std    = std_mech["tear_weft"]
+    else:
+        tensile_warp_std = tensile_weft_std = "N/A"
+        peel_warp_std    = peel_weft_std    = "N/A"
+        tear_warp_std    = tear_weft_std    = "N/A"
 
-    block = adh_match.group(1)
+    # 2) HF standards (B/B & F/B)
+    std_hf = extract_chinese_hf_standard(page_text)
+    if std_hf:
+        bb_warp_std = std_hf.get("bb_warp", "N/A")
+        bb_weft_std = std_hf.get("bb_weft", "N/A")
+        fb_warp_std = std_hf.get("fb_warp", "N/A")
+        fb_weft_std = std_hf.get("fb_weft", "N/A")
+    else:
+        bb_warp_std = bb_weft_std = "N/A"
+        fb_warp_std = fb_weft_std = "N/A"
+
+    # 3) Per-roll mechanical overrides
+    mech_rows = extract_english_mech_row_map(page_text)
+
+    # 4) Only treat F/B as real if an explicit header exists anywhere on the page
+    page_has_fb_header = re.search(r"\bF\s*/\s*B\b", page_text) is not None
+    if not page_has_fb_header:
+        fb_warp_std = fb_weft_std = "N/A"
+
+    # 5) Extract ALL B/B blocks (handles side-by-side duplicated tables)
+    #    Supports both 熱壓 and 高週波強度
+    bb_block_pat = re.compile(
+        r"(?:Item\s*)"
+        r"(?:Adhesion\s*Strength)\s*"
+        r"\(N/5cm\)\s*-\s*B/B"
+        r"(.*?)"
+        r"(?="
+        r"(?:\s*Item\s*(?:Adhesion\s*Strength)\s*\(N/5cm\)\s*-\s*(?:B/B|F/B))"
+        r"|(?:\s*Operator\s*:)"
+        r"|(?:\s*ISO\s*NO\.)"
+        r"|(?:\s*<<<)"
+        r"|\Z"
+        r")",
+        flags=re.S | re.I
+    )
+
+    bb_blocks = [m.group(1) for m in bb_block_pat.finditer(page_text)]
+    if not bb_blocks:
+        return rows
+
+    block = "\n".join(b.strip() for b in bb_blocks if b and b.strip())
+
+
+    peel = re.search(
+        r"P\s*e\s*e\s*l\s*[\.\-\/]?\s*S\s*t\s*r\s*e\s*n\s*g\s*t\s*h",
+        block,
+        re.IGNORECASE | re.DOTALL
+    )
+    tear = re.search(
+        r"T\s*e\s*a\s*r\s*[\.\-\/]?\s*S\s*t\s*r\s*e\s*n\s*g\s*t\s*h",
+        block,
+        re.IGNORECASE | re.DOTALL
+    )
 
     for line in block.splitlines():
-        line = line.rstrip()
-        if not line.strip():
+        if not re.search(r"(Qualified|Unqualified)", line, flags=re.I):
             continue
 
-        m = re.match(r"\s*(\d+)\s+", line)
-        if not m:
+        m_line = re.match(r"\s*(\d+)\s+(.*)", line)
+        if not m_line:
             continue
 
-        roll_no = int(m.group(1))
-        rest = line[m.end():]
+        roll_no = int(m_line.group(1))
+        rest = m_line.group(2)
 
-        parts = rest.split()
-        num_tokens = [p for p in parts if re.search(r"\d", p)]
+        # ---- collect numeric/ND tokens on this row ----
+        tokens = []
+        for tok in rest.split():
+            if "ND" in tok.upper():
+                tokens.append("ND")
+            elif re.search(r"\d", tok):
+                num = clean_num(tok)
+                if num and not is_num_less_than_2(num):
+                    tokens.append(num)
 
-        # Expect at least 8 numeric-ish tokens: B/B(2) + F/B(2) + Tear(2) + Peel(2)
-        if len(num_tokens) < 8:
+        if not tokens:
             continue
 
-        nums = [clean_num(p) for p in num_tokens[:8]]
+        # defaults
+        bb_warp = "N/A"
+        bb_weft = "N/A"
+        fb_warp = "N/A"
+        fb_weft = "N/A"
+    
+            # ===== CASE 2: Normal layout (no peel column) =====
+            # Never infer F/B unless the page has an explicit F/B header.
+        print(tokens)
+        if page_has_fb_header:
+            if len(tokens) >= 4:
+                bb_warp, bb_weft, fb_warp, fb_weft = tokens[:4]
+            elif len(tokens) == 2:
+                bb_warp, bb_weft = tokens
+        else:
+            # Only B/B is valid; ignore any extra numbers (often duplicated B/B table or other cols)
+            if len(tokens) >= 2:
+                bb_warp, bb_weft = tokens[:2]
+        if tear and peel and len(tokens) >= 8:
+            if peel.start() < tear.start():
+                peel_warp, peel_weft, tear_warp, tear_weft = tokens[4:]
+            else:
+                tear_warp,tear_weft, peel_warp, peel_weft = tokens[4:]
+        elif tear and len(tokens)>=6:
+            tear_warp, tear_weft = tokens[4:]
+        elif peel and len(tokens)>=6:
+            peel_warp, peel_weft = tokens[4:]
+            
+        # ---- fill missing HF from standards ----
+        if bb_warp == "N/A" and bb_warp_std != "N/A":
+            bb_warp = bb_warp_std
+        if bb_weft == "N/A" and bb_weft_std != "N/A":
+            bb_weft = bb_weft_std
 
+        # Only fill F/B from standards if page truly has F/B
+        if page_has_fb_header:
+            if fb_warp == "N/A" and fb_warp_std != "N/A":
+                fb_warp = fb_warp_std
+            if fb_weft == "N/A" and fb_weft_std != "N/A":
+                fb_weft = fb_weft_std
+
+        # ---- tensile / peel / tear from standards + mech overrides ----
+        tensile_warp = tensile_warp_std
+        tensile_weft = tensile_weft_std
+        if not peel: 
+            peel_warp    = peel_warp_std
+            peel_weft    = peel_weft_std
+        if not tear:
+            tear_warp    = tear_warp_std
+            tear_weft    = tear_weft_std
+
+        if roll_no in mech_rows:
+            info = mech_rows[roll_no]
+            tensile_warp = info.get("tensile_warp", tensile_warp)
+            tensile_weft = info.get("tensile_weft", tensile_weft)
+            peel_warp    = info.get("peel_warp", peel_warp)
+            peel_weft    = info.get("peel_weft", peel_weft)
+            tear_warp    = info.get("tear_warp", tear_warp)
+            tear_weft    = info.get("tear_weft", tear_weft)
+
+        # Only override peel_warp when the HF block truly has a peel column
+
+        # IMPORTANT: keep output keys EXACTLY as before (incl. your "高迪波..." typo)
         row = {
+            "filename": filename,
             "訂單編號": lot_no,
             "重量": weight,
             "厚度": thickness,
             "roll": roll_no,
-            # high-frequency B/B & F/B
-            "高週波強度B/B_warp": nums[0],
-            "高週波強度B/B_weft": nums[1],
-            "高迪波強度F/B_warp": nums[2],
-            "高迪波強度F/B_weft": nums[3],
-            # tear
-            "撕裂強度_warp": nums[4],
-            "撕裂強度_weft": nums[5],
-            # peel
-            "剝離強度_warp": nums[6],
-            "剝離強度_weft": nums[7],
+            "拉力強度_warp": tensile_warp,
+            "拉力強度_weft": tensile_weft,
+            "剝離強度_warp": peel_warp,
+            "剝離強度_weft": peel_weft,
+            "撕裂強度_warp": tear_warp,
+            "撕裂強度_weft": tear_weft,
+            "高週波強度B/B_warp": bb_warp,
+            "高週波強度B/B_weft": bb_weft,
+            "高迪波強度F/B_warp": fb_warp,
+            "高迪波強度F/B_weft": fb_weft,
         }
-
-        # Tensile: per-roll if present, else standard, else N/A
-        if roll_no in tensile_map:
-            row["拉力強度_warp"], row["拉力強度_weft"] = tensile_map[roll_no]
-        else:
-            row["拉力強度_warp"] = std_warp or "N/A"
-            row["拉力強度_weft"] = std_weft or "N/A"
-
         rows.append(row)
+
+    return rows
+
+def extract_english_mech_row_map(page_text: str):
+    """
+    From the 拉力強度 block, build:
+      roll_no -> { tensile_warp, tensile_weft, peel_warp, peel_weft, tear_warp, tear_weft }
+    For this file, only roll 2 has real values.
+    """
+    m = re.search(
+        r"(?:Item\s*)?Tensile\s*Strength\s*\(N/5cm\)"
+        r"(.*?)(?="
+        r"(?:\s*Item\s*(?:Adhesion\s*Strength)\s*\(N/5cm\)\s*-\s*B/B)"  # next section (HF)
+        r"|(?:\s*Operator\s*:)"
+        r"|(?:\s*ISO\s*NO\.)"
+        r"|(?:\s*<<<)"
+        r"|\Z"
+        r")",
+        page_text,
+        flags=re.S | re.I
+    )
+
+    if not m:
+        return {}
+
+    block = m.group(1)
+    rows: Dict[int, Dict[str, str]] = {}
+
+    for line in block.splitlines():
+        m_line = re.match(r"\s*(\d+)\s+(.*)", line)
+        if not m_line:
+            continue
+
+        roll_no = int(m_line.group(1))
+        rest = m_line.group(2)
+
+        tokens = rest.split()
+        vals = []
+        for t in tokens:
+            if "ND" in t.upper():
+                vals.append("ND")
+            elif re.search(r"[\d]", t):
+                v = clean_num(t)
+                if v:
+                    vals.append(v)
+
+        if len(vals) < 6:
+            if len(vals) >= 2:
+                rows[roll_no] = {
+                    "tensile_warp": vals[0],
+                    "tensile_weft": vals[1],
+                }
+            return rows
+
+        rows[roll_no] = {
+            "tensile_warp": vals[0],
+            "tensile_weft": vals[1],
+            "peel_warp": vals[2],
+            "peel_weft": vals[3],
+            "tear_warp": vals[4],
+            "tear_weft": vals[5],
+        }
 
     return rows
 
@@ -318,6 +505,7 @@ def extract_chinese_standard_mech(page_text: str):
       tear_warp, tear_weft
     Returns a dict or None.
     """
+    return None
     m = re.search(
         r"(?:檢)?\s*驗\s*項\s*目\s+拉\s*力\s*強\s*度(.*?)(?:檢\s*驗\s*項\s*目|<<<|\Z)",
         page_text,
@@ -366,6 +554,7 @@ def extract_chinese_hf_standard(page_text: str):
     Will NOT reuse B/B for F/B.
     If F/B standards are missing, they remain "N/A".
     """
+    return None
 
     # Optional but helpful: only consider F/B standards if an explicit F/B header exists somewhere
     page_has_fb_header = re.search(r"\(N/in\)\s*-\s*F/B", page_text) is not None
@@ -492,9 +681,16 @@ def extract_chinese_mech_row_map(page_text: str):
     For this file, only roll 2 has real values.
     """
     m = re.search(
-        r"(?:檢)?\s*驗\s*項\s*目\s+熱\s*壓\s*\(N/in\)-B/B(.*?)(?:(?:檢\s*)?驗\s*人\s*員|[:：]\s*驗\s*人\s*員\s*[:：]|ISO NO\.|<<<|\Z)",
+        r"(?:檢\s*)?驗\s*項\s*目\s*拉\s*力\s*強\s*度\s*\(N/in\)"
+        r"(.*?)(?="
+        r"(?:\s*(?:檢\s*)?驗\s*項\s*目\s*(?:高\s*週\s*波\s*強\s*度|熱\s*壓)\s*\(N/in\)\s*-\s*B/B)"  # next section (HF)
+        r"|(?:\s*[:：]?\s*(?:檢\s*)?驗\s*人\s*員\s*[:：])"
+        r"|(?:\s*ISO\s*NO\.)"
+        r"|(?:\s*<<<)"
+        r"|\Z"
+        r")",
         page_text,
-        flags=re.S,
+        flags=re.S
     )
     if not m:
         return {}
@@ -535,7 +731,7 @@ def extract_chinese_mech_row_map(page_text: str):
     return rows
 
 # CHINESE EXTRACT ALL ROWS
-def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, thickness: str):
+def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, thickness: str, filename):
     """
     Chinese 高週波 / 熱壓 parser (schema-preserving):
 
@@ -727,6 +923,7 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
 
         # IMPORTANT: keep output keys EXACTLY as before (incl. your "高迪波..." typo)
         row = {
+            "filename": filename,
             "訂單編號": lot_no,
             "重量": weight,
             "厚度": thickness,
@@ -742,7 +939,6 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
             "高迪波強度F/B_warp": fb_warp,
             "高迪波強度F/B_weft": fb_weft,
         }
-
         rows.append(row)
 
     return rows
@@ -829,6 +1025,7 @@ def main():
     output_path = os.path.join(desktop_path, "output.csv")
 
     HEADER_MAP = {
+        "filename": "Filename",
         "訂單編號": "Lot No.",
         "重量": "Weight",
         "厚度": "Overall Thickness",
