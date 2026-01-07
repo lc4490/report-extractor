@@ -828,20 +828,39 @@ def main():
     desktop_path = get_desktop_path()
     output_path = os.path.join(desktop_path, "output.csv")
 
-    fieldnames = [
-        "訂單編號","重量","厚度","roll",
-        "拉力強度_warp","拉力強度_weft",
-        "剝離強度_warp","剝離強度_weft",
-        "撕裂強度_warp","撕裂強度_weft",
-        "高週波強度B/B_warp","高週波強度B/B_weft",
-        "高迪波強度F/B_warp","高迪波強度F/B_weft",
-    ]
+    HEADER_MAP = {
+        "訂單編號": "Lot No.",
+        "重量": "Weight",
+        "厚度": "Overall Thickness",
+        "roll": "roll",
 
-    with open(output_path, mode='w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
+        "拉力強度_warp": "Tensile_Strength_warp",
+        "拉力強度_weft": "Tensile_Strength_weft",
+
+        "剝離強度_warp": "Peel_Strength_warp",
+        "剝離強度_weft": "Peel_Strength_weft",
+
+        "撕裂強度_warp": "Tear_Strength_warp",
+        "撕裂強度_weft": "Tear_Strength_weft",
+
+        "高週波強度B/B_warp": "Adhesion_Strength_B/B_warp",
+        "高週波強度B/B_weft": "Adhesion_Strength_B/B_weft",
+
+        "高迪波強度F/B_warp": "Adhesion_Strength_F/B_warp",
+        "高迪波強度F/B_weft": "Adhesion_Strength_F/B_weft",
+    }
+
+
+    with open(output_path, mode="w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+
+        # English header row
+        writer.writerow(HEADER_MAP.values())
+
+        # Data rows
         for row in rows:
-            writer.writerow(row)
+            writer.writerow([row.get(k, "") for k in HEADER_MAP.keys()])
+
         
 if __name__ == "__main__":
     main()
