@@ -50,7 +50,7 @@ def extract_header_for_page(page_text: str):
     - Lot no. 25021201-1  Weight 350.5 g/m2  Overall Thickness 0.44 mm
     """
     lot_match = re.search(
-        r"(?:訂\s*單\s*編\s*號|Lot no\.)\s+(\S+)",
+        r"(?:[訂]?單\s*編\s*號|[Ll]?ot\s+no\.)\s+(\S+)",
         page_text
     )
 
@@ -121,7 +121,7 @@ def extract_rows_for_page(page_text: str, filename):
     lot_no, weight, thickness = header
 
     # If the page has 訂單編號, treat it as Chinese layout
-    if re.search(r"訂\s*單\s*編\s*號", page_text):
+    if re.search(r"單\s*編\s*號", page_text):
         # prrint("chinese")
         return extract_hf_rows_for_page_chinese(page_text, lot_no, weight, thickness, filename)
 
@@ -356,7 +356,7 @@ def extract_hf_rows_for_page_english(page_text: str, lot_no: str, weight: str, t
     
             # ===== CASE 2: Normal layout (no peel column) =====
             # Never infer F/B unless the page has an explicit F/B header.
-        print(tokens)
+        # print(tokens)
         if page_has_fb_header:
             if len(tokens) >= 4:
                 bb_warp, bb_weft, fb_warp, fb_weft = tokens[:4]
