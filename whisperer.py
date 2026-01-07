@@ -359,6 +359,80 @@ def extract_chinese_hf_standard(page_text: str):
       - F/B_warp
       - F/B_weft
 
+    Works for both:
+      - 熱壓 (N/in)-B/B
+      - 高週波強度 (N/in)-B/B
+
+    Will NOT reuse B/B for F/B.
+    If F/B standards are missing, they remain "N/A".
+    """
+
+    # Optional but helpful: only consider F/B standards if an explicit F/B header exists somewhere
+    page_has_fb_header = re.search(r"\(N/in\)\s*-\s*F/B", page_text) is not None
+
+    # Match the HF section starting at the B/B header (either 熱壓 or 高週波強度)
+    m = re.search(
+        r"(?:檢\s*)?驗\s*項\s*目\s*"
+        r"(?:熱\s*壓|高\s*週\s*波\s*強\s*度)\s*"
+        r"\(N/in\)\s*-\s*B/B"
+        r"(.*?)(?:(?:[:：]?\s*(?:檢\s*)?驗\s*人\s*員\s*[:：])|ISO\s*NO\.|<<<|\Z)",
+        page_text,
+        flags=re.S,
+    )
+    if not m:
+        return None
+
+    block = m.group(1)
+
+    # Jump to 品質標準 section
+    m_std = re.search(r"品\s*質\s*標\s*準(.*)", block, flags=re.S)
+    if not m_std:
+        return None
+
+    after = m_std.group(1)
+
+    bb_warp = "N/A"
+    bb_weft = "N/A"
+    fb_warp = "N/A"
+    fb_weft = "N/A"
+
+    # Find the first numeric line after 品質標準
+    for line in after.splitlines():
+        # grab numbers like 200.0 or 180,0
+        nums = re.findall(r"[\d]+(?:[.,]\d+)?", line)
+        if not nums:
+            continue
+
+        # B/B always first two numbers
+        if len(nums) >= 1:
+            bb_warp = clean_num(nums[0])
+        if len(nums) >= 2:
+            bb_weft = clean_num(nums[1])
+
+        # F/B only if:
+        #  - the page actually has an F/B header somewhere, AND
+        #  - we actually see 3rd/4th numbers here
+        if page_has_fb_header and len(nums) >= 3:
+            fb_warp = clean_num(nums[2])
+        if page_has_fb_header and len(nums) >= 4:
+            fb_weft = clean_num(nums[3])
+
+        break
+
+    return {
+        "bb_warp": bb_warp,
+        "bb_weft": bb_weft,
+        "fb_warp": fb_warp,
+        "fb_weft": fb_weft,
+    }
+
+    """
+    Extract standard values for:
+      - B/B_warp
+      - B/B_weft
+      - F/B_warp
+      - F/B_weft
+
     Will NOT reuse B/B for F/B. If F/B standards are missing, they remain "N/A".
     """
     m = re.search(
@@ -463,53 +537,73 @@ def extract_chinese_mech_row_map(page_text: str):
 # CHINESE EXTRACT ALL ROWS
 def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, thickness: str):
     """
-    Chinese 高週波 parser:
+    Chinese 高週波 / 熱壓 parser (schema-preserving):
 
     - Tensile / peel / tear standards from 拉力強度 block
     - Per-roll overrides from 拉力 block (if present)
-    - 高週波 B/B & F/B from this block
-      * if F/B missing per roll, fall back to F/B standards
+    - 熱壓 or 高週波 B/B & F/B from this block
+      * IMPORTANT: Never infer F/B unless an explicit "-F/B" header exists on the page.
+      * If F/B header is absent, F/B stays "N/A" and is NOT filled from standards.
+
+    NOTE: Output dict keys are kept EXACTLY the same as your old function
+          (including "高迪波強度F/B_*" typo) to match existing CSV headers.
     """
     rows = []
 
-    # 1. Mechanical standards (tensile / peel / tear)
+    # 1) Mechanical standards (tensile / peel / tear)
     std_mech = extract_chinese_standard_mech(page_text)
     if std_mech:
         tensile_warp_std = std_mech["tensile_warp"]
         tensile_weft_std = std_mech["tensile_weft"]
-        peel_warp_std   = std_mech["peel_warp"]
-        peel_weft_std   = std_mech["peel_weft"]
-        tear_warp_std   = std_mech["tear_warp"]
-        tear_weft_std   = std_mech["tear_weft"]
+        peel_warp_std    = std_mech["peel_warp"]
+        peel_weft_std    = std_mech["peel_weft"]
+        tear_warp_std    = std_mech["tear_warp"]
+        tear_weft_std    = std_mech["tear_weft"]
     else:
         tensile_warp_std = tensile_weft_std = "N/A"
-        peel_warp_std   = peel_weft_std   = "N/A"
-        tear_warp_std   = tear_weft_std   = "N/A"
+        peel_warp_std    = peel_weft_std    = "N/A"
+        tear_warp_std    = tear_weft_std    = "N/A"
 
-    # 2. HF standards (B/B & F/B) – NEW
+    # 2) HF standards (B/B & F/B)
     std_hf = extract_chinese_hf_standard(page_text)
     if std_hf:
-        bb_warp_std = std_hf["bb_warp"]
-        bb_weft_std = std_hf["bb_weft"]
-        fb_warp_std = std_hf["fb_warp"]
-        fb_weft_std = std_hf["fb_weft"]
+        bb_warp_std = std_hf.get("bb_warp", "N/A")
+        bb_weft_std = std_hf.get("bb_weft", "N/A")
+        fb_warp_std = std_hf.get("fb_warp", "N/A")
+        fb_weft_std = std_hf.get("fb_weft", "N/A")
     else:
         bb_warp_std = bb_weft_std = "N/A"
         fb_warp_std = fb_weft_std = "N/A"
 
-    # 3. Per-roll mechanical overrides
+    # 3) Per-roll mechanical overrides
     mech_rows = extract_chinese_mech_row_map(page_text)
 
-    # 4. 高週波強度 block
-    m = re.search(
-        r"(?:檢)?\s*驗\s*項\s*目\s+熱\s*壓\s*\(N/in\)-B/B(.*?)(?:(?:檢\s*)?驗\s*人\s*員|[:：]\s*驗\s*人\s*員\s*[:：]|ISO NO\.|<<<|\Z)",
-        page_text,
-        flags=re.S,
+    # 4) Only treat F/B as real if an explicit header exists anywhere on the page
+    page_has_fb_header = re.search(r"\(N/in\)\s*-\s*F/B", page_text) is not None
+    if not page_has_fb_header:
+        fb_warp_std = fb_weft_std = "N/A"
+
+    # 5) Extract ALL B/B blocks (handles side-by-side duplicated tables)
+    #    Supports both 熱壓 and 高週波強度
+    bb_block_pat = re.compile(
+        r"(?:檢\s*)?驗\s*項\s*目\s*"
+        r"(?:熱\s*壓|高\s*週\s*波\s*強\s*度)\s*"
+        r"\(N/in\)\s*-\s*B/B"
+        r"(.*?)"
+        r"(?="
+        r"(?:\s*(?:檢\s*)?驗\s*項\s*目\s*(?:熱\s*壓|高\s*週\s*波\s*強\s*度)\s*\(N/in\)\s*-\s*(?:B/B|F/B))"
+        r"|(?:\s*[:：]?\s*(?:檢\s*)?驗\s*人\s*員\s*[:：])"
+        r"|(?:\s*ISO\s*NO\.)"
+        r"|(?:\s*<<<)"
+        r"|\Z"
+        r")",
+        flags=re.S
     )
-    if not m:
+    bb_blocks = [m.group(1) for m in bb_block_pat.finditer(page_text)]
+    if not bb_blocks:
         return rows
 
-    block = m.group(1)
+    block = "\n".join(b.strip() for b in bb_blocks if b and b.strip())
 
     hf_has_peel = ("剝 離 強 度" in block) or ("剝離 強 度" in block) or ("剝離強度" in block)
 
@@ -517,7 +611,6 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
         if not re.search(r"(合\s*格|不\s*合\s*格)", line):
             continue
 
-        # prrint("line:", line)
         m_line = re.match(r"\s*(\d+)\s+(.*)", line)
         if not m_line:
             continue
@@ -544,22 +637,18 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
         fb_warp = "N/A"
         fb_weft = "N/A"
         peel_extra_warp = None
-        
-        # prrint(tokens) 
 
         if hf_has_peel:
-            # ====== CASE 1: HF HEADER HAS 剝離強度 COLUMN (old weird file) ======
+            # ===== CASE 1: HF block has 剝離強度 column (legacy weird layout) =====
             if len(tokens) >= 5:
                 # B/B(2) + F/B(2) + 剝離_warp
                 bb_warp, bb_weft, fb_warp, fb_weft = tokens[:4]
                 peel_extra_warp = tokens[4]
 
             elif len(tokens) == 4:
-                # just B/B + F/B
                 bb_warp, bb_weft, fb_warp, fb_weft = tokens
 
             elif len(tokens) == 3:
-                # B/B(2) + (either F/B_warp or 剝離_warp); use threshold vs standards
                 bb_warp, bb_weft, third = tokens
 
                 if third == "ND":
@@ -569,7 +658,7 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
                     try:
                         v = float(third)
                         peel_ref = float(peel_warp_std) if peel_warp_std not in ("N/A", "ND") else None
-                        fb_ref = float(fb_warp_std) if fb_warp_std not in ("N/A", "ND") else None
+                        fb_ref   = float(fb_warp_std) if fb_warp_std not in ("N/A", "ND") else None
                         if peel_ref is not None and fb_ref is not None:
                             if abs(v - peel_ref) <= abs(v - fb_ref) * 0.7:
                                 treated_as_peel = True
@@ -581,21 +670,26 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
                     if treated_as_peel:
                         peel_extra_warp = third
                     else:
-                        fb_warp = third
+                        if page_has_fb_header:
+                            fb_warp = third
 
             elif len(tokens) == 2:
                 bb_warp, bb_weft = tokens
 
         else:
-            # ====== CASE 2: HF HEADER HAS NO 剝離強度, ONLY B/B + F/B + 厚度(mm) ======
-            # → Use ONLY the first 4 tokens as B/B & F/B; ignore the trailing thicknesses
-            if len(tokens) >= 4:
-                bb_warp, bb_weft, fb_warp, fb_weft = tokens[:4]
-            elif len(tokens) == 3:
-                bb_warp, bb_weft, fb_warp = tokens
-            elif len(tokens) == 2:
-                bb_warp, bb_weft = tokens
-            # peel_extra_warp stays None here
+            # ===== CASE 2: Normal layout (no peel column) =====
+            # Never infer F/B unless the page has an explicit F/B header.
+            if page_has_fb_header:
+                if len(tokens) >= 4:
+                    bb_warp, bb_weft, fb_warp, fb_weft = tokens[:4]
+                elif len(tokens) == 3:
+                    bb_warp, bb_weft, fb_warp = tokens
+                elif len(tokens) == 2:
+                    bb_warp, bb_weft = tokens
+            else:
+                # Only B/B is valid; ignore any extra numbers (often duplicated B/B table or other cols)
+                if len(tokens) >= 2:
+                    bb_warp, bb_weft = tokens[:2]
 
         # ---- fill missing HF from standards ----
         if bb_warp == "N/A" and bb_warp_std != "N/A":
@@ -603,10 +697,12 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
         if bb_weft == "N/A" and bb_weft_std != "N/A":
             bb_weft = bb_weft_std
 
-        if fb_warp == "N/A" and fb_warp_std != "N/A":
-            fb_warp = fb_warp_std
-        if fb_weft == "N/A" and fb_weft_std != "N/A":
-            fb_weft = fb_weft_std
+        # Only fill F/B from standards if page truly has F/B
+        if page_has_fb_header:
+            if fb_warp == "N/A" and fb_warp_std != "N/A":
+                fb_warp = fb_warp_std
+            if fb_weft == "N/A" and fb_weft_std != "N/A":
+                fb_weft = fb_weft_std
 
         # ---- tensile / peel / tear from standards + mech overrides ----
         tensile_warp = tensile_warp_std
@@ -629,6 +725,7 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
         if hf_has_peel and peel_extra_warp is not None:
             peel_warp = peel_extra_warp
 
+        # IMPORTANT: keep output keys EXACTLY as before (incl. your "高迪波..." typo)
         row = {
             "訂單編號": lot_no,
             "重量": weight,
