@@ -48,6 +48,7 @@ def extract_header_for_page(page_text: str):
     Bilingual header, OCR-tolerant.
     Returns (lot_no, weight, thickness) or None.
     """
+    page_text = re.sub(r"\$\s*(?=\d)", "S", page_text)
     # Lot no / 訂單編號 (allow missing first char due to OCR)
     lot_match = re.search(
         r"(?:.?單\s*編\s*號|[Ll]?ot\s*no\.?)\s*[:：]?\s*([0-9A-Za-z\-]+)",
@@ -144,7 +145,10 @@ def extract_all_rows(result_text: str, filename):
     for page_text in pages:
         if not page_text.strip():
             continue
-        page_rows = extract_rows_for_page(page_text, filename)
+        filename_shortened = filename.split("-")
+        filename_shortened = filename_shortened[2:]
+        filename_shortened = "-".join(filename_shortened)
+        page_rows = extract_rows_for_page(page_text, filename_shortened)
         all_rows.extend(page_rows)
 
     return all_rows
@@ -398,9 +402,21 @@ def extract_chinese_mech_row_map(page_text: str):
     block = m.group(1)
     rows: Dict[int, Dict[str, str]] = {}
 
+    carry_vals = []
     for line in block.splitlines():
         m_line = re.match(r"\s*(\d+)\s+(.*)", line)
         if not m_line:
+            if re.search(r"(合\s*格|判\s*定|\*)", line) and re.search(r"\d", line):
+                tokens = line.split()
+                vals = []
+                for t in tokens:
+                    if "ND" in t.upper():
+                        vals.append("ND")
+                    elif re.search(r"[\d]", t):
+                        v = clean_num(t)
+                        if v:
+                            vals.append(v)
+                carry_vals = vals
             continue
 
         roll_no = int(m_line.group(1))
@@ -416,18 +432,19 @@ def extract_chinese_mech_row_map(page_text: str):
                 if v:
                     vals.append(v)
 
-        if len(vals) < 6:
-            continue
-
+        # if len(vals) < 6:
+        #     continue
+        if carry_vals:
+            vals.extend(carry_vals)
+            carry_vals = []
         rows[roll_no] = {
-            "tensile_warp": vals[0],
-            "tensile_weft": vals[1],
-            "peel_warp": vals[2],
-            "peel_weft": vals[3],
-            "tear_warp": vals[4],
-            "tear_weft": vals[5],
+            "tensile_warp": vals[0] if len(vals) > 0 else "N/A",
+            "tensile_weft": vals[1] if len(vals) > 1 else "N/A",
+            "peel_warp": vals[2] if len(vals) > 2 else "N/A",
+            "peel_weft": vals[3] if len(vals) > 3 else "N/A",
+            "tear_warp": vals[4] if len(vals) > 4 else "N/A",
+            "tear_weft": vals[5] if len(vals) > 5 else "N/A",
         }
-
     return rows
 
 # CHINESE EXTRACT ALL ROWS
@@ -776,7 +793,12 @@ def extract_value_decision_pairs(roll_block: str):
 # ---------- core extraction ----------
 
 def extract_page_meta(page_text: str):
-    lot = first_match(r"Lot\s*no\.?\s*[:：]?\s*([0-9\-]+)", page_text, flags=re.I) or "N/A"
+    page_text = re.sub(r"\$\s*(?=\d)", "S", page_text)
+    lot = first_match(
+    r"Lot\s*no\.?\s*[:：]?\s*([A-Za-z0-9][A-Za-z0-9\-_/]*)",
+    page_text,
+    flags=re.I
+) or "N/A"
     weight = first_match(r"Weight\s*[:：]?\s*([0-9]+(?:[.,][0-9]+)?)", page_text, flags=re.I) or "N/A"
 
     # allow mm to be separated / delayed
