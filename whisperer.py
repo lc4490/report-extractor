@@ -134,8 +134,6 @@ def extract_rows_for_page(page_text: str, filename):
 
     lot_no, weight, thickness = header
     
-    if re.search("Hydrostatic", page_text):
-        return []
 
     # If the page has 訂單編號, treat it as Chinese layout
     if re.search(r"單\s*編\s*號", page_text):
@@ -409,19 +407,32 @@ def extract_chinese_mech_row_map(page_text: str):
     m = re.search(
         r"(?:檢\s*)?驗\s*項\s*目\s*拉\s*力\s*強\s*度\s*\(N/in\)"
         r"(.*?)(?="
-        r"(?:\s*(?:檢\s*)?驗\s*項\s*目\s*(?:高\s*週\s*波\s*強\s*度|熱\s*壓)\s*\(N/in\)\s*-\s*B/B)"  # next section (HF)
-        r"|(?:\s*[:：]?\s*(?:檢\s*)?驗\s*人\s*員\s*[:：])"
-        r"|(?:\s*ISO\s*NO\.)"
-        r"|(?:\s*<<<)"
-        r"|\Z"
+            # ---- next section headers (stop here) ----
+            r"(?:\s*(?:檢\s*)?驗\s*項\s*目\s*(?:"
+                r"高\s*週\s*波\s*強\s*度"          # HF
+                r"|熱\s*壓"                      # (if you have this variant)
+                r"|熱\s*封\s*強\s*度"            # heat seal
+                r"|耐\s*水\s*壓"                 # hydrostatic (Chinese)
+                r"|Hydro\s*-?\s*static"          # hydrostatic (English, OCR-safe)
+            r")"
+            r".{0,40}?(?:\(|-)?\s*(?:N/in|N/2cm|mmH2O)?"
+            r")"
+            r"|(?:\s*[:：]?\s*(?:檢\s*)?驗\s*人\s*員\s*[:：])"
+            r"|(?:\s*ISO\s*NO\.)"
+            r"|(?:\s*<<<)"
+            r"|\Z"
         r")",
         page_text,
-        flags=re.S
+        flags=re.S | re.I
     )
+
     if not m:
         return {}
 
     block = m.group(1)
+
+    print("BLOCK__________________")
+    print(block)
     rows: Dict[int, Dict[str, str]] = {}
 
     carry_vals = []
@@ -858,7 +869,7 @@ def extract_mech_rows(page_text: str):
 
     # capture from first "Roll no." after the tensile table until the next "Item  Adhesion Strength" or Operator/<<<
     mech_block = first_match(
-        r"Roll\s*no\.(.*?)(?=\n\s*Item\s+Adhesion\s+Strength|\n\s*Operator\s*:|<<<|\Z)",
+        r"Roll\s*no\.(.*?)(?=\n\s*(?:Item\s+Adhesion\s+Strength|Item\s+Hydro\s*-?\s*static|Hydro\s*-?\s*static|Operator\s*:|<<<)|\Z)",
         page_text,
         flags=re.I | re.S
     )
@@ -899,21 +910,29 @@ def extract_hf_rows(page_text: str):
 
     # capture from HF header until Operator/<<<
     hf_block = first_match(
-        r"Item\s+Adhesion\s+Strength\s*\(N/5cm\)\s*-\s*B/B(.*?)(?=\n\s*Operator\s*:|\n\s*ISO\s*NO\.|<<<|\Z)",
+        r"Item\s+Adhesion\s+Strength\s*\(N/5cm\)\s*-\s*B/B"
+        r"(.*?)"
+        r"(?=\n\s*(?:Operator\s*:|ISO\s*NO\.|Hydrostatic|<<<)|\Z)",
         page_text,
         flags=re.I | re.S
     )
 
     if not hf_block:
         hf_block = first_match(
-            r"Adhesion\s+Strength\s*\(N/5cm\)\s*-\s*B/B(.*?)(?=\n\s*Operator\s*:|\n\s*ISO\s*NO\.|<<<|\Z)",
-            page_text,
-            flags=re.I | re.S
-        )
+        r"Adhesion\s+Strength\s*\(N/5cm\)\s*-\s*B/B"
+        r"(.*?)"
+        r"(?=\n\s*(?:Operator\s*:|ISO\s*NO\.|Hydrostatic|<<<)|\Z)",
+        page_text,
+        flags=re.I | re.S
+    )
+
     if not hf_block:
         return hf_rows
 
-    page_has_fb = re.search(r"\b-\s*F\s*/\s*B\b", page_text, re.I) is not None or re.search(r"\bF\s*/\s*B\b", page_text, re.I) is not None
+    page_has_fb = re.search(r"\b-?\s*F\s*/\s*(?:B|F)\b",hf_block,re.I) is not None
+    page_has_tear = re.search(r"\bT\s*e\s*a\s*r\b", hf_block, re.I) is not None
+    page_has_peel = re.search(r"\bP\s*e\s*e\s*l\b", hf_block, re.I) is not None
+
 
     # the HF block contains the roll table starting at "Roll no."
     roll_part = first_match(r"Roll\s*no\.?\s*(.*)", hf_block, flags=re.I | re.S)
@@ -941,19 +960,31 @@ def extract_hf_rows(page_text: str):
             bb_weft   = vals[1] if len(vals) > 1 else "N/A"
             fb_warp   = vals[2] if len(vals) > 2 else "N/A"
             fb_weft   = vals[3] if len(vals) > 3 else "N/A"
-            tear_warp = vals[4] if len(vals) > 4 else "N/A"
-            tear_weft = vals[5] if len(vals) > 5 else "N/A"
-            peel_warp = vals[6] if len(vals) > 6 else "N/A"
-            peel_weft = vals[7] if len(vals) > 7 else "N/A"
+            if(page_has_tear):
+                tear_warp = vals[4] if len(vals) > 4 else "N/A"
+                tear_weft = vals[5] if len(vals) > 5 else "N/A"
+            else:
+                tear_warp = tear_weft = "N/A"
+            if(page_has_peel):
+                peel_warp = vals[6] if len(vals) > 6 else "N/A"
+                peel_weft = vals[7] if len(vals) > 7 else "N/A"
+            else:
+                peel_warp = peel_weft = "N/A"
         else:
             bb_warp   = vals[0] if len(vals) > 0 else "N/A"
             bb_weft   = vals[1] if len(vals) > 1 else "N/A"
             fb_warp   = "N/A"
             fb_weft   = "N/A"
-            tear_warp = vals[2] if len(vals) > 2 else "N/A"
-            tear_weft = vals[3] if len(vals) > 3 else "N/A"
-            peel_warp = vals[4] if len(vals) > 4 else "N/A"
-            peel_weft = vals[5] if len(vals) > 5 else "N/A"
+            if(page_has_tear):
+                tear_warp = vals[2] if len(vals) > 2 else "N/A"
+                tear_weft = vals[3] if len(vals) > 3 else "N/A"
+            else:
+                tear_warp = tear_weft = "N/A"
+            if(page_has_peel):
+                peel_warp = vals[4] if len(vals) > 4 else "N/A"
+                peel_weft = vals[5] if len(vals) > 5 else "N/A"
+            else:
+                peel_warp = peel_weft = "N/A"
 
         hf_rows[roll] = {
             "bb_warp": bb_warp, "bb_weft": bb_weft,
@@ -961,7 +992,8 @@ def extract_hf_rows(page_text: str):
             "tear_warp": tear_warp, "tear_weft": tear_weft,
             "peel_warp": peel_warp, "peel_weft": peel_weft
         }
-
+        if("Hydrostatic" in rest):
+            return hf_rows
     return hf_rows
 
 def build_rows(page_text: str, filename: str):
