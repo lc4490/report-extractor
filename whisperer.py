@@ -133,6 +133,9 @@ def extract_rows_for_page(page_text: str, filename):
         return []
 
     lot_no, weight, thickness = header
+    
+    if re.search("Hydrostatic", page_text):
+        return []
 
     # If the page has 訂單編號, treat it as Chinese layout
     if re.search(r"單\s*編\s*號", page_text):
@@ -690,6 +693,8 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
 def select_folder():
     folder = input("貼上資料夾路徑（或將資料夾拖曳到此處）：").strip().strip('"')
     p = Path(folder)
+    if p.is_file() and p.suffix.lower() == ".pdf":
+        return p
     if not p.exists() or not p.is_dir():
         print("無效的資料夾。")
         return None
@@ -705,6 +710,10 @@ def select_folder():
 def parse_only_pdfs(folder_path):
     folder_path = Path(folder_path)
     filenames = []
+    
+    if(folder_path.is_file()):
+        filenames.append(folder_path)
+        return filenames
 
     for path in folder_path.rglob("*.pdf"):
         # 1) Must be a file (rglob can return dirs in other patterns)
@@ -896,7 +905,6 @@ def extract_hf_rows(page_text: str):
     )
 
     if not hf_block:
-        # sometimes OCR drops the "Item" line; fallback: start at "Adhesion Strength...-B/B"
         hf_block = first_match(
             r"Adhesion\s+Strength\s*\(N/5cm\)\s*-\s*B/B(.*?)(?=\n\s*Operator\s*:|\n\s*ISO\s*NO\.|<<<|\Z)",
             page_text,
