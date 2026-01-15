@@ -11,13 +11,24 @@ import tkinter as tk
 from tkinter import filedialog
 import sys
 import ctypes
+import unicodedata
 
 os.system('cls' if os.name == 'nt' else 'clear')
 os.environ["TK_SILENCE_DEPRECATION"] = "1"
 
 # Initialize the client with your API key
 # Provide the base URL and API key explicitly
-client = LLMWhispererClientV2(base_url="https://llmwhisperer-api.us-central.unstract.com/api/v2", api_key='1s_TV6nE2Q2e3XQTT10ZtXTg8UPLKBjGYs3SWhwbOLk')
+paid_client = LLMWhispererClientV2(base_url="https://llmwhisperer-api.us-central.unstract.com/api/v2", api_key='1s_TV6nE2Q2e3XQTT10ZtXTg8UPLKBjGYs3SWhwbOLk')
+client = LLMWhispererClientV2(base_url="https://llmwhisperer-api.us-central.unstract.com/api/v2", api_key='lBkXnmkVufnr50LkM0hDPGElyGOiQoxIs66e2VFU1_Q')
+
+# CLIENT
+def is_quota_error(e: Exception):
+    msg = str(e).lower()
+    return any(k in msg for k in (
+        "quota", "limit", "rate", "too many requests", "exceeded",
+        "insufficient", "credit", "billing", "payment"
+    ))
+
 
 # HELPER CLEAN FUNCTION
 def clean_num(s: str):
@@ -148,12 +159,13 @@ def extract_all_rows(result_text: str, filename):
         filename_shortened = filename.split("-")
         filename_shortened = filename_shortened[2:]
         filename_shortened = "-".join(filename_shortened)
+        filename_shortened = unicodedata.normalize("NFC", str(filename_shortened))
         page_rows = extract_rows_for_page(page_text, filename_shortened)
         all_rows.extend(page_rows)
 
     return all_rows
 
-def collect_results(client: str, path: str):
+def collect_results(client, path: str):
     rows = []
     try:
         result = client.whisper(
@@ -187,6 +199,8 @@ def collect_results(client: str, path: str):
                 # Poll every 5 seconds
                 time.sleep(5)
     except LLMWhispererClientException as e:
+        if is_quota_error(e):
+            raise  # IMPORTANT: bubble up so we can retry with paid
         print(e)
     return rows
 
@@ -194,8 +208,13 @@ def big_collect_results(client: str, filenames):
     results: list[dict] = []
     
     for full_path in filenames:
-        print(full_path.name)
-        file_rows = collect_results(client, full_path)
+        try:
+            file_rows = collect_results(client, full_path)
+        except LLMWhispererClientException as e:
+            if is_quota_error(e):
+                file_rows = collect_results(paid_client, full_path)
+            else:
+                raise            
         if file_rows:
             results.extend(file_rows)
     return results
@@ -499,23 +518,30 @@ def extract_hf_rows_for_page_chinese(page_text: str, lot_no: str, weight: str, t
     # 5) Extract ALL B/B blocks (handles side-by-side duplicated tables)
     #    Supports both 熱壓 and 高週波強度
     bb_block_pat = re.compile(
-        r"(?:檢\s*)?驗\s*項\s*目\s*"
-        r"(?:熱\s*壓|高\s*週\s*波\s*強\s*度)\s*"
-        r"\(N/in\)\s*-\s*B/B"
-        r"(.*?)"
-        r"(?="
-        r"(?:\s*(?:檢\s*)?驗\s*項\s*目\s*(?:熱\s*壓|高\s*週\s*波\s*強\s*度)\s*\(N/in\)\s*-\s*(?:B/B|F/B))"
+    r"(?:檢\s*)?驗\s*項\s*目\s*"
+    r"(?:"
+        r"熱\s*(?:壓|封)(?:\s*強\s*度)?"
+        r"|高\s*週\s*波\s*強\s*度"
+    r")\s*"
+    r"\(N\s*/\s*(?:in|2cm)\)\s*-\s*B/B"
+    r"(.*?)"
+    r"(?="
+        r"(?:\s*(?:檢\s*)?驗\s*項\s*目\s*"
+        r"(?:"
+            r"熱\s*(?:壓|封)(?:\s*強\s*度)?"
+            r"|高\s*週\s*波\s*強\s*度"
+        r")\s*"
+        r"\(N\s*/\s*(?:in|2cm)\)\s*-\s*(?:B/B|F/B))"
         r"|(?:\s*[:：]?\s*(?:檢\s*)?驗\s*人\s*員\s*[:：])"
         r"|(?:\s*ISO\s*NO\.)"
         r"|(?:\s*<<<)"
         r"|\Z"
-        r")",
-        flags=re.S
+    r")",
+    flags=re.S
     )
     bb_blocks = [m.group(1) for m in bb_block_pat.finditer(page_text)]
     if not bb_blocks:
         return rows
-
     block = "\n".join(b.strip() for b in bb_blocks if b and b.strip())
 
     hf_has_peel = ("剝 離 強 度" in block) or ("剝離 強 度" in block) or ("剝離強度" in block)
@@ -1039,7 +1065,7 @@ def main():
     rows = big_collect_results(client, filenames)
     # Extract tables from the PDF
     desktop_path = get_desktop_path()
-    output_path = os.path.join(desktop_path, "output.csv")
+    output_path = os.path.join(desktop_path, f"output_{folder_path.name}.csv")
 
     HEADER_MAP = {
         "filename": "Filename",
@@ -1065,7 +1091,7 @@ def main():
     }
 
 
-    with open(output_path, mode="w", newline="", encoding="utf-8") as f:
+    with open(output_path, mode="w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
 
         # English header row
